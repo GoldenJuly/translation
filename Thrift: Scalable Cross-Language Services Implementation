@@ -240,14 +240,94 @@ struct Example {
   4:string name="thrifty"
 }
 
+为了避免手动分配和自动分配的标识符的冲突，遗漏了标识符的字段会从-1递减的分配标识符，Thrift只支持手动分配正数标识符。
+当数据被反序列化，代码就可以使用这些标识符来合理地标识字段并确定该标识符是否与定义文件中的字段对齐。
+如果一个字段的标识符没有被识别，代码可以使用类型说明符跳过未识别的字段而不会报错。同样地，这是可能的，因为所有的数据类型都是自定界限的。
+字段标识符可以（应该）在函数参数列表中指定。事实上，参数列表不仅仅代表后端的结构，实际上在编译器前端共享相同的代码。
+这使得方法参数可以进行版本安全地修改。
+service StringCache {
+  void set(1:i32 key, 2:string value),
+  string get(1:i32 key) throws (1:KeyNotFound knf),
+  void delete(1:i32 key)
+}
 
+指定字段标识符的语法使用来回显他们的结构，结构体可以被认识是一个字段，其标识符是key，values是强类型命名的字段。
+字段标识符使用i16的Thrift内部类型。但是注意，TProtocol抽象可以将标识符编码成任意格式。
 
+5.2、Isset（设置接口）
+遇到意外字段时，可以安全地忽略并丢弃该字段。当找不到预期的字段时，必须有某种方式向开发人员发出信号，表明它不存在。
+这是通过定义对象内部的内部isset结构实现的。（在PHP中，Isset功能隐含为空值，在Python中为None，在Ruby中为nil。）
+实质上，每个Thrift结构的内部isset对象包含每个字段的布尔值，表示该字段是否存在于结构中。
+当reader函数收到结构时，在直接操作之前应该检查字段已经被设置。
 
+class Example {
+  public:
+    Example() :
+      number(10),
+      bigNumber(0),
+      decimals(0),
+      name("thrifty") {}
+      
+    int32_t number;
+    int64_t bigNumber;
+    double decimals;
+    std::string name;
+    
+    struct __isset {
+      __isset() :
+      number(false),
+      bigNumber(false),
+      decimals(false),
+      name(false) {}
+      bool number;
+      bool bigNumber;
+      bool decimals;
+      bool name;
+    } __isset;
+    ...
+}
 
+5.3、案例分析
+有四种情况可能会发生版本不匹配。
+1.添加了字段，旧客户端，新服务。 在这种情况下，旧客户端不会发送新字段。 新服务识别出该字段未设置，对过期请求使用默认行为。
+2.删除字段，旧客户端，新服务。 在这种情况下，旧客户端发送删除的字段。 新服务只是忽略它。
+3.添加了字段，新客户端，旧服务。 新客户端发送旧服务器无法识别的字段。 旧服务只是忽略它并当成正常处理。
+4.删除字段，新客户端，旧服务。 这是最危险的情况，因为旧服务不太可能为缺少的字段实现合适的默认行为。 建议在这种情况下，在新客户端之前推出新服务。
 
+5.4、协议/传输版本控制
+TProtocol抽象通用被设计成可以让协议实现能够以他们认为合适的方式自由地进行版本控制。 
+具体来说，任何协议实现都可以在writeMessageBegin（）调用中随意发送它喜欢的任何内容。
+完全取决于实现者如何在协议级别处理版本控制。 关键是协议编码更改要与接口定义版本更改安全隔离。 
+注意，针对TTransport接口也是一样。
+例如，如果我们希望向TFileTransport添加一些新的校验和或错误检测，
+我们可以简单地将一个版本头部添加到它写入文件的数据中，这样它仍然可以接受没有给定头部的旧日志文件。
 
+6、RPC 实现
+6.1 TProcessor
+Thrift设计中的最后一个核心接口是TProcessor，也许是最简单的构造函数。接口如下：
+interface TProcessor {
+  bool process(TProtocol in, TProtocol out) throws TException
+}
+这里的关键设计思想是，我们构建的复杂系统可以从根本上分解为在输入和输出上运行的代理或服务。 
+在大多数情况下，实际上只有一个需要处理的输入和输出（RPC客户端）。
 
-
-
-
+6.2 生成的代码
+定义服务后，我们使用一些帮助程序生成一个能够处理该服务的RPC请求的TProcessor实例。 基本结构（以伪C ++表示）如下：
+Service.thrift
+  => Service.cpp
+    interface ServiceIf
+    class ServiceClient : virtual ServiceIf
+    TProtocol in
+    TProtocol out
+  class ServiceProcessor : TProcessor
+    ServiceIf handler
+    
+ServiceHandler.cpp
+  class ServiceHandler : virtual ServiceIf
+TServer.cpp
+  TServer(TProcessor processor,
+          TServerTransport transport,
+          TTransportFactory tfactory,
+          TProtocolFactory pfactory)
+  serve()
 
