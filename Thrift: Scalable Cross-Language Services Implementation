@@ -331,3 +331,36 @@ TServer.cpp
           TProtocolFactory pfactory)
   serve()
 
+我们从Thrift的定义文件生成虚拟服务接口。生成的client类实现了这些接口并且使用两个Tprotocol实例来进行I/O操作。
+生成的处理程序实现了TProcessor接口。通过process()调用，生成的代码具有处理RPC调用的所有逻辑，并将其作为服务接口的一个参数，
+该代码由程序开发者实现。由用户提供了独立的非生成的程序接口源代码。
+
+6.3、TServer
+最终，Thrift核心库提供一个TServer抽象。TServer对象主要作用如下：
+• 使用TServerTransport获取TTransport
+• 使用TTransportFactory选择性转换原始transport成合适的应用程序transport（通常这里使用TBufferedTransportFactory）
+• 使用TProtocolFactory来为TTransport创建输入和输出协议
+• 唤醒TProcessor对象的process()方法
+
+Thrift层级划分合理，服务端代码不需要关心传输、编码或者使用的应用端程序。server封装了连接处理，多线程等的逻辑，而让处理程序来处理RPC。
+应用程序开发者仅仅需要编写定义好的Thrift文件以及相关接口实现。Facebook已经部署了多个TServer实现，包括了单线程TSimpleServer，
+一个连接一个线程的TThreadedServer，以及线程池的TThreadPoolServer。TProcessor的接口设计非常通用。不要求TServer接受生成的TProcessor对象。
+Thrift允许开发者轻松编写在TProtocol对象上任何类型的服务（例如，服务可以简单的流式传输一个对象，无需实际的RPC方法调用。）
+
+7、实现细节
+7.1、目标语言
+Thrift目前支持5种目标语言：C++、Java、Python、Ruby和PHP，在Facebook，我们已经部署的服务主要是C++、Java和Python。PHP实现的Thrift服务同样嵌入在
+Apache的web服务中，为我们许多使用前端提供了透明的后台访问，这些前端使用基于TTransport接口实现的THttpClient。
+尽管Thrift目的是（明确地设计成）比典型的Web技术更高效和更强大，正如我们设计基于XML的REST Web服务API时，
+我们注意到Thrift可以很容易地定义我们的服务接口。 虽然我们目前没有使用SOAP封装（作者认为已经有太多重复的企业Java软件来做这类事情），
+但是我们可以快速扩展Thrift来为我们服务生成的XML Schema Definition文件，以及为我们的web服务快速生成同框架不同版本的实现。 
+虽然公共Web服务与Thrift的核心用例和设计并不相关，但Thrift促进了快速迭代，并使我们能够在需要时快速将整个基于XML的Web服务迁移到更高性能的系统。
+
+7.2、生成的结构体
+
+
+
+
+
+
+
