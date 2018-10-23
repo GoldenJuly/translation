@@ -357,6 +357,91 @@ Apache的web服务中，为我们许多使用前端提供了透明的后台访�
 虽然公共Web服务与Thrift的核心用例和设计并不相关，但Thrift促进了快速迭代，并使我们能够在需要时快速将整个基于XML的Web服务迁移到更高性能的系统。
 
 7.2、生成的结构体
+我们做出了有意识的决定，使我们生成的结构尽可能透明。所有字段都可公开访问;没有set()和get()方法。
+同样，不强制使用isset对象。我们不包含任何FieldNotSetException构造。开发人员可以选择使用这些字段来编写更健壮的代码，
+但系统对于完全忽略isset结构并且在所有情况下都会提供合适的默认行为的开发人员来说是健壮的。
+这种选择的动机是希望简化应用程序开发。我们的目标不是让开发人员用他们选择的语言学习丰富的新库，而是生成允许他们使用每种语言中最熟悉的构造的代码。
+我们还将生成的对象的rea()和write()方法设为public，以便可以在RPC客户端和服务器的上下文之外使用这些对象。 
+Thrift是一个有用的工具，仅用于生成可跨编程语言轻松序列化的对象。
+
+7.3、 RPC 方法标识符
+RPC中的方法调用是通过将方法名称作为字符串发送来实现的。这种方法的一个问题是较长的方法名称需要更多带宽。
+我们尝试使用fixedsize哈希来识别方法，但最终得出的结论是节省的费用不值得。
+如果没有元存储系统（即，为当前版本的文件生成非冲突哈希，我们必须知道该文件的任何先前版本中曾存在的所有冲突）。
+我们希望在方法调用时避免太多不必要的字符串比较。为了解决这个问题，我们生成从字符串到函数指针的映射，以便在常见情况下通过常量哈希查找有效地完成调用。
+这需要使用一些有趣的代码构造。因为Java没有函数指针，所以进程函数都是实现公共接口的私有成员类。
+private class ping implements ProcessFunction {
+  public void process(int seqid,
+                      TProtocol iprot,
+                      TProtocol oprot)
+    throws TException
+  { ...}
+}
+HashMap<String,ProcessFunction> processMap_ = new HashMap<String,ProcessFunction>();
+In C++, 我们采用相对高级的构造: 成员函数指针
+std::map<std::string,
+        void (ExampleServiceProcessor::*)(int32_t,
+        facebook::thrift::protocol::TProtocol*,
+        facebook::thrift::protocol::TProtocol*)>
+processMap_;
+使用这些技术，字符串处理的成本是最小的，并且我们通过检查已知的字符串方法名称就能够轻松调试损坏或误解数据。
+
+7.4、服务于多线程
+Thrift服务需要基本的多线程来处理来自多个客户端的同时请求。 对于Thrift服务器逻辑的Python和Java实现，随语言一起分发的标准线程库提供了足够的支持。 
+对于C ++实现，不存在标准的多线程运行时库。 具体而言，不存在健壮，轻量级和可移植的线程管理器和计时器类实现。 
+我们研究了现有的实现，即boost::thread，boost::threadpool，ACE Thread Manager和ACE Timer。
+
+虽然boost::threads[1]提供了多线程原语（互斥，条件，线程）的纯净，轻量和健壮的实现，但它不提供线程管理器或计时器实现。
+boost::threadpool[2]也看起来很有前景，但对于我们的目的还不够远。 我们希望尽可能地限制对第三方库的依赖。
+因为boost::threadpool不是纯模板库并且需要运行时库，并且因为它还不是官方Boost发行版的一部分，所以我们觉得它还没有准备好在Thrift中使用。 
+随着boost::threadpool的发展，特别是如果它被添加到Boost发行版中，我们可能会重新考虑我们不使用它的决定。
+
+除了多线程原语之外，ACE还有一个线程管理器和计时器类。 ACE最大的问题是它是ACE。 与Boost不同，ACE API质量很差。 
+ACE中的所有内容都依赖于ACE中的所有其他内容 - 因此迫使开发人员抛弃标准类（例如STL集合），转而使用ACE的自制实现。 
+此外，与Boost不同，ACE实现几乎不了解C ++编程的功能和缺陷，也没有利用现代模板技术来确保编译时安全性和合理的编译器错误消息。 
+出于所有这些原因，ACE被拒绝了。 相反，我们选择实现我们自己的库，如以下部分所述。
+
+7.5、线程原语
+Thrift线程库实现在facebook::thrift::concurrency命名空间下并且有三个部分：
+• primitives
+• thread pool manager
+• timer manager
+如上所述，我们对在Thrift上引入任何其他依赖项犹豫不决。 我们决定使用boost::shared ptr，因为它对多线程应用程序非常有用，
+它不需要链接时或运行时库（即它是纯模板库），它将成为C++ 0x标准的一部分。
+
+我们实现了标准的Mutex和Condition类，以及一个Monitor类。 后者只是互斥和条件变量的组合，类似于为Java Object类提供的Monitor实现。 
+这有时也被称为障碍。 我们提供了一个Synchronized guard类来允许类似Java的同步块。 这只是一些语法糖，
+但是，就像它的Java对应物一样，它清楚地界定了代码的关键部分。 与Java版本不同，我们仍然能够以编程方式锁定，解锁，阻止和发送motinors。
+void run() {
+  {Synchronized s(manager->monitor);
+    if (manager->state == TimerManager::STARTING) {
+        manager->state = TimerManager::STARTED;
+        manager->monitor.notifyAll();
+    }
+  }
+}
+我们再次从Java借用了线程和runnable类之间的区别。 线程是实际的可调度对象。 Runnable是在线程中执行的逻辑。 
+Thread实现处理所有特定于平台的线程创建和销毁问题，而Runnable实现处理特定于应用程序的每线程(per-thread)逻辑。 
+这种方法的好处是开发人员可以轻松地对Runnable类进行子类化，而无需引入特定于平台的超类。
+
+7.6、Thread, Runnable, and shared ptr
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
