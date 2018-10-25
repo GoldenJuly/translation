@@ -425,16 +425,13 @@ Thread实现处理所有特定于平台的线程创建和销毁问题，而Runna
 这种方法的好处是开发人员可以轻松地对Runnable类进行子类化，而无需引入特定于平台的超类。
 
 7.6、Thread, Runnable, and shared ptr
+我们在整个ThreadManager和TimerManager实现中使用boost::shared ptr来保证可以被多个线程访问的死对象的清理。 
+对于Thread类实现，boost::shared ptr使用需要特别注意确保在创建和关闭线程时，Thread对象既不会泄漏也不会过早地解除引用。
 
-
-
-
-
-
-
-
-
-
+线程创建需要调用C库。(在我们的例子中是POSIX线程库libpthread，但对于WIN32线程也是如此）。
+通常，操作系统很少（如果有的话）保证何时调用ThreadMain（一个C线程的入口点函数）。 
+因此，我们的线程可能会创建调用，ThreadFactory::newThread（）可能会在此之前很好地返回调用者。 
+如果调用者在ThreadMain调用之前放弃其引用，则确保不会过早地清除返回的Thread对象，Thread对象在其start方法中对其自身进行弱引用。
 
 
 
